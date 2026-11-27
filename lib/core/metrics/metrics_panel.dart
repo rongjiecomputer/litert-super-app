@@ -11,12 +11,17 @@ class MetricsPanel extends StatelessWidget {
     required this.lastRun,
     required this.history,
     this.unitLabel = 'tile',
+    this.runSection,
   });
 
   final LoadInfo? loadInfo;
   final RunMetrics? lastRun;
   final List<RunMetrics> history;
   final String unitLabel;
+
+  /// Replaces the image-oriented "last run" and history cards (e.g. audio
+  /// use cases with their own metrics).
+  final Widget? runSection;
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +36,9 @@ class MetricsPanel extends StatelessWidget {
               : _LoadSection(loadInfo!),
         ),
         const SizedBox(height: 12),
+        if (runSection != null)
+          runSection!
+        else
         SectionCard(
           title: 'Inference cost (last run)',
           icon: Icons.speed,
@@ -38,7 +46,7 @@ class MetricsPanel extends StatelessWidget {
               ? const _Empty('Run a task to see timings and memory.')
               : _RunSection(lastRun!, unitLabel),
         ),
-        if (history.isNotEmpty) ...[
+        if (runSection == null && history.isNotEmpty) ...[
           const SizedBox(height: 12),
           SectionCard(
             title: 'History',

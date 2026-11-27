@@ -94,7 +94,7 @@ class _ModelTile extends StatelessWidget {
       ),
       ModelStatus.missing => (
         Icons.cloud_download_outlined,
-        'Not downloaded · ~${formatBytes(spec.approxBytes)}',
+        'Not downloaded · ~${formatBytes(manager.missingBytes(spec))}',
       ),
       ModelStatus.error => (Icons.error_outline, 'Error: ${state.error}'),
     };
@@ -124,7 +124,8 @@ class _ModelTile extends StatelessWidget {
             Text(spec.description, style: theme.textTheme.bodySmall),
             const SizedBox(height: 6),
             SelectableText(
-              '${spec.hfRepo} · ${spec.fileName}'
+              '${spec.hfRepo} · '
+              '${spec.extraFiles.isEmpty ? spec.fileName : '${spec.files.length} files'}'
               '${spec.license == null ? '' : ' · ${spec.license}'}\n$path',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -174,7 +175,8 @@ class _ModelTile extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         title: Text('Delete ${spec.name}?'),
         content: Text(
-          'This removes ${manager.pathOf(spec)}. You can download it again '
+          'This removes ${spec.extraFiles.isEmpty ? manager.pathOf(spec) : 'its ${spec.files.length} files from ${manager.paths.modelDir(spec.id)}'}. '
+          'You can download it again '
           'later.',
         ),
         actions: [

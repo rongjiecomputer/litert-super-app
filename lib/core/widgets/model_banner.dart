@@ -36,7 +36,7 @@ class ModelBanner extends StatelessWidget {
                     children: [
                       Text(
                         '${spec.name} is not downloaded '
-                        '(~${formatBytes(spec.approxBytes)})',
+                        '(~${formatBytes(manager.missingBytes(spec))})',
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                       Text(

@@ -80,9 +80,11 @@ class InferenceOptions {
 
   /// Returns options valid for [caps], replacing unsupported choices.
   InferenceOptions sanitized(PlatformCaps caps) {
-    final accels = caps.accelerators(runtime);
+    final rt = caps.runtimes.contains(runtime) ? runtime : caps.runtimes.first;
+    final accels = caps.accelerators(rt);
     final accel = accels.contains(accelerator) ? accelerator : accels.first;
     var o = copyWith(
+      runtime: rt,
       accelerator: accel,
       cpuThreads: cpuThreads.clamp(1, caps.maxThreads),
     );
@@ -161,9 +163,14 @@ class PlatformCaps {
     required this.compiledModelAccelerators,
     required this.interpreterAccelerators,
     required this.maxThreads,
+    this.runtimes = RuntimeKind.values,
   });
 
   final String os;
+
+  /// Runtimes a use case may pick (TTS graphs need the Interpreter for
+  /// int32 inputs and named signatures).
+  final List<RuntimeKind> runtimes;
   final List<AcceleratorKind> compiledModelAccelerators;
   final List<AcceleratorKind> interpreterAccelerators;
   final int maxThreads;
@@ -198,6 +205,15 @@ class PlatformCaps {
       ),
     };
   }
+
+  /// Copy limited to [allowed] runtimes.
+  PlatformCaps restrictTo(List<RuntimeKind> allowed) => PlatformCaps(
+    os: os,
+    compiledModelAccelerators: compiledModelAccelerators,
+    interpreterAccelerators: interpreterAccelerators,
+    maxThreads: maxThreads,
+    runtimes: allowed,
+  );
 
   List<AcceleratorKind> accelerators(RuntimeKind runtime) => switch (runtime) {
     RuntimeKind.compiledModel => compiledModelAccelerators,

@@ -78,15 +78,19 @@ class InferenceOptionsPanel extends StatelessWidget {
         children: [
           LabeledField(
             label: 'Runtime',
-            help:
-                'CompiledModel: LiteRT 2.x API with CPU/GPU/NPU accelerators.\n'
-                'Interpreter: classic TFLite API with XNNPACK (CPU) or Metal '
-                'delegate.',
+            help: caps.runtimes.length == 1
+                ? 'This use case needs the ${caps.runtimes.first.label} API '
+                      '(integer inputs and named signatures).'
+                : 'CompiledModel: LiteRT 2.x API with CPU/GPU/NPU '
+                      'accelerators.\n'
+                      'Interpreter: classic TFLite API with XNNPACK (CPU) or '
+                      'Metal delegate.',
             child: seg(
               RuntimeKind.values,
               o.runtime,
               (v) => v.label,
               (v) => onChanged(o.copyWith(runtime: v).sanitized(caps)),
+              isEnabled: caps.runtimes.contains,
             ),
           ),
           LabeledField(

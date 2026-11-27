@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../core/models/model_catalog.dart';
 import '../core/models/model_spec.dart';
+import '../features/tts/tts_page.dart';
 import '../features/upscale/image_workspace.dart';
 import '../features/upscale/upscale_page.dart';
 import '../features/upscale/video_workspace.dart';
@@ -54,6 +55,18 @@ final useCases = <UseCase>[
     tags: const ['Vision', 'Image', 'Video'],
     opens: const [...upscaleImageExtensions, ...upscaleVideoExtensions],
     builder: (_) => const UpscalePage(),
+  ),
+  UseCase(
+    id: 'tts',
+    title: 'Text to speech',
+    summary:
+        'Kokoro-82M (fast, English, 28 voices) and Qwen3-TTS 0.6B '
+        '(10 languages, on-device voice cloning), streamed as it is generated.',
+    icon: Icons.record_voice_over_outlined,
+    selectedIcon: Icons.record_voice_over,
+    models: [ModelCatalog.kokoro82m, ModelCatalog.qwen3Tts06b],
+    tags: const ['Audio', 'Speech'],
+    builder: (_) => const TtsPage(),
   ),
   const UseCase(
     id: 'segmentation',

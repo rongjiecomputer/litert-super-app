@@ -110,6 +110,76 @@ class _CompiledModelRunner implements ModelRunner {
   bool? get fullyAccelerated => _model.isFullyAccelerated;
 }
 
+/// A classic TFLite [Interpreter] plus the options/delegate it owns, built
+/// from [InferenceOptions] (XNNPACK on CPU, Metal delegate on Apple GPU).
+///
+/// Shared by [ModelRunner] and multi-graph engines (e.g. TTS) that drive
+/// signatures directly. Tensors are not allocated yet.
+class InterpreterBundle {
+  InterpreterBundle._(this.interpreter, this.options, this.delegate, this.accelerator);
+
+  final Interpreter interpreter;
+  final InterpreterOptions options;
+  final Delegate? delegate;
+
+  /// Human label, e.g. "CPU (XNNPACK 4T)".
+  final String accelerator;
+
+  bool get delegateActive => interpreter.hasActiveDelegate;
+
+  static InterpreterBundle open(
+    String path,
+    InferenceOptions o, {
+    int? threads,
+  }) {
+    final t = threads ?? o.cpuThreads;
+    final options = InterpreterOptions()..threads = t;
+    Delegate? delegate;
+    String accel;
+    switch (o.accelerator) {
+      case AcceleratorKind.gpu when Platform.isMacOS || Platform.isIOS:
+        delegate = GpuDelegate(
+          options: GpuDelegateOptions(
+            allowPrecisionLoss: o.precision == PrecisionKind.fp16,
+          ),
+        );
+        accel = 'GPU (Metal delegate)';
+      case AcceleratorKind.gpu:
+      case AcceleratorKind.npu:
+        options.delete();
+        throw UnsupportedError(
+          'Interpreter ${o.accelerator.label} is not available on '
+          '${Platform.operatingSystem}; use CompiledModel instead.',
+        );
+      case AcceleratorKind.cpu:
+        delegate = XNNPackDelegate(
+          options: XNNPackDelegateOptions(
+            numThreads: t,
+            flags: o.precision == PrecisionKind.fp16
+                ? _xnnFlagQs8 | _xnnFlagQu8 | _xnnFlagForceFp16
+                : 0,
+          ),
+        );
+        accel = 'CPU (XNNPACK ${t}T)';
+    }
+    options.addDelegate(delegate);
+    try {
+      final interpreter = Interpreter.fromFile(File(path), options: options);
+      return InterpreterBundle._(interpreter, options, delegate, accel);
+    } catch (_) {
+      options.delete();
+      delegate.delete();
+      rethrow;
+    }
+  }
+
+  void close() {
+    interpreter.close();
+    options.delete();
+    delegate?.delete();
+  }
+}
+
 // TfLiteXNNPackDelegateOptions.flags (xnnpack_delegate.h); not re-exported
 // by flutter_litert.
 const _xnnFlagQs8 = 1;
@@ -136,52 +206,20 @@ class _InterpreterRunner implements ModelRunner {
     ModelSpec spec,
     InferenceOptions o,
   ) {
-    final options = InterpreterOptions()..threads = o.cpuThreads;
-    Delegate? delegate;
-    String accel;
-    switch (o.accelerator) {
-      case AcceleratorKind.gpu when Platform.isMacOS || Platform.isIOS:
-        delegate = GpuDelegate(
-          options: GpuDelegateOptions(
-            allowPrecisionLoss: o.precision == PrecisionKind.fp16,
-          ),
-        );
-        accel = 'GPU (Metal delegate)';
-      case AcceleratorKind.gpu:
-      case AcceleratorKind.npu:
-        options.delete();
-        throw UnsupportedError(
-          'Interpreter ${o.accelerator.label} is not available on '
-          '${Platform.operatingSystem}; use CompiledModel instead.',
-        );
-      case AcceleratorKind.cpu:
-        delegate = XNNPackDelegate(
-          options: XNNPackDelegateOptions(
-            numThreads: o.cpuThreads,
-            flags: o.precision == PrecisionKind.fp16
-                ? _xnnFlagQs8 | _xnnFlagQu8 | _xnnFlagForceFp16
-                : 0,
-          ),
-        );
-        accel = 'CPU (XNNPACK ${o.cpuThreads}T)';
-    }
-    options.addDelegate(delegate);
-    final Interpreter interpreter;
+    final b = InterpreterBundle.open(path, o);
+    final interpreter = b.interpreter, options = b.options;
+    final delegate = b.delegate, accel = b.accelerator;
     try {
-      interpreter = Interpreter.fromFile(File(path), options: options);
       interpreter.allocateTensors();
     } catch (_) {
-      options.delete();
-      delegate.delete();
+      b.close();
       rethrow;
     }
     final inShape = interpreter.getInputTensor(0).shape;
     final outShape = interpreter.getOutputTensor(0).shape;
     if (!_sameShape(inShape, spec.inputShape) ||
         !_sameShape(outShape, spec.outputShape)) {
-      interpreter.close();
-      options.delete();
-      delegate.delete();
+      b.close();
       throw StateError(
         'Model shape $inShape → $outShape does not match spec '
         '${spec.inputShape} → ${spec.outputShape}',

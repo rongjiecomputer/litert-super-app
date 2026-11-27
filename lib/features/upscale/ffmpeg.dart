@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -74,6 +75,21 @@ class FfmpegTools {
     return VideoInfo.fromProbeJson(
       jsonDecode('${r.stdout}') as Map<String, Object?>,
     );
+  }
+
+  /// Decodes any audio (or video's audio track) to mono float PCM at
+  /// [sampleRate]. Used by the TTS voice-cloning reference input.
+  Future<(Float32List, int)> decodeAudio(String path, {int sampleRate = 24000}) async {
+    final r = await Process.run(
+      ffmpeg,
+      ['-v', 'error', '-i', path, '-vn', '-f', 'f32le', '-ac', '1', '-ar', '$sampleRate', '-'],
+      stdoutEncoding: null,
+    );
+    if (r.exitCode != 0) {
+      throw ProcessException(ffmpeg, [path], '${r.stderr}', r.exitCode);
+    }
+    final bytes = Uint8List.fromList(r.stdout as List<int>);
+    return (Float32List.fromList(bytes.buffer.asFloat32List(0, bytes.length ~/ 4)), sampleRate);
   }
 
   /// Best available H.264 encoder (falls back to MPEG-4 Part 2).

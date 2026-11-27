@@ -18,6 +18,15 @@ abstract class WorkerTask<R> {
   Future<R> run(WorkerContext ctx);
 }
 
+/// A multi-graph pipeline (e.g. a TTS engine) owned by the worker isolate.
+///
+/// Use cases whose models don't fit [ModelRunner]'s single float32
+/// input/output shape load one of these instead; only one engine (or one
+/// runner) is resident at a time.
+abstract class WorkerEngine {
+  void close();
+}
+
 /// State visible to tasks inside the worker isolate.
 class WorkerContext {
   WorkerContext._(this._send);
@@ -25,6 +34,7 @@ class WorkerContext {
   final void Function(Object progress) _send;
   ModelRunner? runner;
   ModelSpec? spec;
+  WorkerEngine? engine;
   bool _cancelRequested = false;
 
   /// Scratch space that survives between tasks (e.g. last result to save).
@@ -36,6 +46,30 @@ class WorkerContext {
 
   ModelRunner requireRunner() =>
       runner ?? (throw StateError('No model loaded in worker'));
+
+  /// Returns the loaded engine of type [T] or throws.
+  T requireEngine<T extends WorkerEngine>() {
+    final e = engine;
+    if (e is T) return e;
+    throw StateError('No ${T.toString()} loaded in worker');
+  }
+
+  /// Closes whatever model or engine is resident.
+  void unloadAll() {
+    runner?.close();
+    runner = null;
+    spec = null;
+    engine?.close();
+    engine = null;
+  }
+
+  /// Lets queued messages (notably cancel requests) through, then throws
+  /// [WorkerCancelled] if cancellation was requested. Long synchronous
+  /// loops should call this between steps.
+  Future<void> checkpoint() async {
+    await Future<void>.delayed(Duration.zero);
+    if (_cancelRequested) throw const WorkerCancelled();
+  }
 }
 
 /// Loads (or reloads) the model and runs one warm-up inference.
@@ -48,9 +82,7 @@ class LoadModelTask extends WorkerTask<LoadInfo> {
 
   @override
   Future<LoadInfo> run(WorkerContext ctx) async {
-    ctx.runner?.close();
-    ctx.runner = null;
-    ctx.spec = null;
+    ctx.unloadAll();
     final rssBefore = ProcessInfo.currentRss;
     final sw = Stopwatch()..start();
     final runner = ModelRunner.load(modelPath, spec, options);
@@ -81,11 +113,7 @@ class LoadModelTask extends WorkerTask<LoadInfo> {
 class UnloadModelTask extends WorkerTask<void> {
   const UnloadModelTask();
   @override
-  Future<void> run(WorkerContext ctx) async {
-    ctx.runner?.close();
-    ctx.runner = null;
-    ctx.spec = null;
-  }
+  Future<void> run(WorkerContext ctx) async => ctx.unloadAll();
 }
 
 class WorkerCancelled implements Exception {
@@ -236,8 +264,7 @@ void _workerMain(SendPort out) {
       case _CancelMsg():
         ctx._cancelRequested = true;
       case _DisposeMsg():
-        ctx.runner?.close();
-        ctx.runner = null;
+        ctx.unloadAll();
         inbox.close();
       case _TaskMsg(:final id, :final task):
         queue = queue.then((_) async {
