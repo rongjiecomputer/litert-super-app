@@ -42,10 +42,11 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   late AppPaths paths;
   late InferenceWorker worker;
-  final caps = PlatformCaps.current().restrictTo([RuntimeKind.interpreter]);
+  final caps = PlatformCaps.current();
+  // TTS_ACCEL=gpu runs the graphs on the GPU (default: CPU reference).
+  const accel = String.fromEnvironment('TTS_ACCEL', defaultValue: 'cpu');
   final options = InferenceOptions(
-    runtime: RuntimeKind.interpreter,
-    accelerator: AcceleratorKind.cpu,
+    accelerator: AcceleratorKind.values.firstWhere((a) => a.name == accel),
     cpuThreads: math.min(8, caps.maxThreads),
   ).sanitized(caps);
 

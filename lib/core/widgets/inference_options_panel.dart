@@ -34,8 +34,6 @@ class InferenceOptionsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final o = options;
-    final accels = caps.accelerators(o.runtime);
-    final isCompiled = o.runtime == RuntimeKind.compiledModel;
     final theme = Theme.of(context);
 
     Widget seg<T extends Object>(
@@ -77,23 +75,6 @@ class InferenceOptionsPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           LabeledField(
-            label: 'Runtime',
-            help: caps.runtimes.length == 1
-                ? 'This use case needs the ${caps.runtimes.first.label} API '
-                      '(integer inputs and named signatures).'
-                : 'CompiledModel: LiteRT 2.x API with CPU/GPU/NPU '
-                      'accelerators.\n'
-                      'Interpreter: classic TFLite API with XNNPACK (CPU) or '
-                      'Metal delegate.',
-            child: seg(
-              RuntimeKind.values,
-              o.runtime,
-              (v) => v.label,
-              (v) => onChanged(o.copyWith(runtime: v).sanitized(caps)),
-              isEnabled: caps.runtimes.contains,
-            ),
-          ),
-          LabeledField(
             label: 'Accelerator',
             help: switch (caps.os) {
               'windows' => 'Windows GPU runs on WebGPU over Direct3D 12.',
@@ -108,14 +89,14 @@ class InferenceOptionsPanel extends StatelessWidget {
               o.accelerator,
               (v) => v.label,
               (v) => onChanged(o.copyWith(accelerator: v).sanitized(caps)),
-              isEnabled: accels.contains,
+              isEnabled: caps.accelerators.contains,
             ),
           ),
           LabeledField(
             label: 'Precision',
             help:
                 'FP16 halves GPU arithmetic precision (faster, may shift '
-                'colours). On CPU it sets XNNPACK force-FP16.',
+                'colours). CPU always computes in FP32.',
             child: seg(
               PrecisionKind.values,
               o.precision,
@@ -125,45 +106,30 @@ class InferenceOptionsPanel extends StatelessWidget {
                   v == PrecisionKind.fp32 || caps.supportsPrecision(o),
             ),
           ),
-          if (isCompiled) ...[
-            LabeledField(
-              label: 'Tensor buffers',
-              help:
-                  'Managed: LiteRT-owned buffers (copy via lock/unlock).\n'
-                  'Host memory: app-owned aligned buffers, which can cut copies '
-                  'on some GPUs.',
-              child: seg(
-                BufferModeKind.values,
-                o.bufferMode,
-                (v) => v.label,
-                (v) => onChanged(o.copyWith(bufferMode: v)),
-              ),
+          if (o.accelerator != AcceleratorKind.cpu)
+            SwitchListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Run unsupported ops on CPU'),
+              value: o.cpuFallback,
+              onChanged: enabled
+                  ? (v) => onChanged(o.copyWith(cpuFallback: v))
+                  : null,
             ),
-            if (o.accelerator != AcceleratorKind.cpu)
-              SwitchListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Fall back to CPU if compilation fails'),
-                value: o.cpuFallback,
-                onChanged: enabled
-                    ? (v) => onChanged(o.copyWith(cpuFallback: v))
-                    : null,
-              ),
-          ],
-          if (!isCompiled && o.accelerator == AcceleratorKind.cpu)
-            LabeledField(
-              label: 'CPU threads: ${o.cpuThreads}',
-              child: Slider(
-                value: o.cpuThreads.toDouble(),
-                min: 1,
-                max: caps.maxThreads.toDouble(),
-                divisions: caps.maxThreads > 1 ? caps.maxThreads - 1 : null,
-                label: '${o.cpuThreads}',
-                onChanged: enabled
-                    ? (v) => onChanged(o.copyWith(cpuThreads: v.round()))
-                    : null,
-              ),
+          LabeledField(
+            label: 'CPU threads: ${o.cpuThreads}',
+            help: 'XNNPACK threads for CPU compute and CPU fallback ops.',
+            child: Slider(
+              value: o.cpuThreads.toDouble(),
+              min: 1,
+              max: caps.maxThreads.toDouble(),
+              divisions: caps.maxThreads > 1 ? caps.maxThreads - 1 : null,
+              label: '${o.cpuThreads}',
+              onChanged: enabled
+                  ? (v) => onChanged(o.copyWith(cpuThreads: v.round()))
+                  : null,
             ),
+          ),
           ...extra,
           const SizedBox(height: 4),
           Row(

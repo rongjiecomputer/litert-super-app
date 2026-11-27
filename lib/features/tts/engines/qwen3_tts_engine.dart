@@ -124,7 +124,8 @@ class Qwen3TtsEngine extends TtsEngine {
       // The MTP's matmuls are small; a few threads is the sweet spot.
       final mtp = LiteRtGraph.open(f(mtpFile), o, threads: math.min(4, o.cpuThreads));
       graphs.add(mtp);
-      final codec = LiteRtGraph.open(f(codecFile), o);
+      // The codec decoder is the graph that benefits from the GPU.
+      final codec = LiteRtGraph.open(f(codecFile), o, accelerate: true);
       graphs.add(codec);
       return Qwen3TtsEngine._(
         QwenTokenizer.fromFile(f(tokenizerFile)),
@@ -152,7 +153,8 @@ class Qwen3TtsEngine extends TtsEngine {
   List<TtsVoice> get voices => const [demoVoice];
 
   @override
-  String get accelerator => _talker.accelerator;
+  String get accelerator =>
+      'talker ${_talker.accelerator} · codec ${_codec.accelerator}';
 
   @override
   void close() {

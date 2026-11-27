@@ -44,19 +44,22 @@ void main() {
   group('InferenceOptions', () {
     test('JSON round-trip', () {
       const o = InferenceOptions(
-        runtime: RuntimeKind.interpreter,
         accelerator: AcceleratorKind.cpu,
         precision: PrecisionKind.fp16,
         cpuFallback: false,
-        bufferMode: BufferModeKind.hostMemory,
         cpuThreads: 6,
       );
       expect(InferenceOptions.fromJson(o.toJson()), o);
     });
 
     test('unknown JSON values fall back to defaults', () {
-      final o = InferenceOptions.fromJson({'runtime': 'nope', 'cpuThreads': 2});
-      expect(o.runtime, RuntimeKind.compiledModel);
+      // `runtime` / `bufferMode` are legacy keys from the Interpreter era.
+      final o = InferenceOptions.fromJson({
+        'runtime': 'interpreter',
+        'accelerator': 'nope',
+        'cpuThreads': 2,
+      });
+      expect(o.accelerator, const InferenceOptions().accelerator);
       expect(o.cpuThreads, 2);
     });
 
@@ -66,21 +69,16 @@ void main() {
           .sanitized(win);
       expect(o.accelerator, AcceleratorKind.cpu);
 
-      final interp = const InferenceOptions(
-        runtime: RuntimeKind.interpreter,
-        accelerator: AcceleratorKind.gpu,
-        cpuThreads: 64,
-      ).sanitized(win);
-      expect(interp.accelerator, AcceleratorKind.cpu);
-      expect(interp.cpuThreads, 8);
+      final threads = const InferenceOptions(cpuThreads: 64).sanitized(win);
+      expect(threads.accelerator, AcceleratorKind.gpu);
+      expect(threads.cpuThreads, 8);
 
       final mac = PlatformCaps.forOs('macos', 10);
       expect(
-        const InferenceOptions(
-          runtime: RuntimeKind.interpreter,
-          accelerator: AcceleratorKind.gpu,
-        ).sanitized(mac).accelerator,
-        AcceleratorKind.gpu,
+        const InferenceOptions(accelerator: AcceleratorKind.npu)
+            .sanitized(mac)
+            .accelerator,
+        AcceleratorKind.npu,
       );
     });
 

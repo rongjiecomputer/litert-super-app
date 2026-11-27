@@ -212,6 +212,7 @@
 				33CC10EA2044A3C60003C045 /* Frameworks */,
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
+				4C1E7A2B9D3F4A5B8E6C0D11 /* Bundle LiteRT runtime */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 			);
 			buildRules = (
@@ -338,6 +339,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
+		};
+		4C1E7A2B9D3F4A5B8E6C0D11 /* Bundle LiteRT runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle LiteRT runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nsrc=\"$SRCROOT/../litert_runtime/macos_arm64\"\nif [ ! -f \"$src/libLiteRt.dylib\" ]; then\n  echo \"error: LiteRT runtime not found in $src. Run: py -I tools/fetch_litert_sdk.py\" >&2\n  exit 1\nfi\ndest=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$dest\"\nfor f in \"$src\"/*.dylib; do\n  cp -f \"$f\" \"$dest/\"\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$dest/$(basename \"$f\")\"\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

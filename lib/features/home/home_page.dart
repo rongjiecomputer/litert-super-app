@@ -1,11 +1,11 @@
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter_litert/native.dart';
 
 import '../../app/services.dart';
 import '../../app/use_cases.dart';
 import '../../core/inference/inference_options.dart';
+import '../../core/litert/ffi.dart';
 import '../../core/models/model_manager.dart';
 import '../../core/widgets/page_header.dart';
 
@@ -39,10 +39,10 @@ class HomePage extends StatelessWidget {
             ),
             _Fact(
               Icons.bolt,
-              'CompiledModel: '
-              '${caps.compiledModelAccelerators.map((a) => a.label).join(' / ')}',
+              'LiteRT CompiledModel: '
+              '${caps.accelerators.map((a) => a.label).join(' / ')}',
             ),
-            _Fact(Icons.memory, 'TFLite ${_version()}'),
+            _Fact(Icons.memory, 'LiteRT ${_version()}'),
             _Fact(Icons.folder_outlined, services.paths.models),
           ],
         ),
@@ -79,7 +79,7 @@ class HomePage extends StatelessWidget {
 
   static String _version() {
     try {
-      return Interpreter.version;
+      return LiteRtApi.instance.abiVersion;
     } catch (_) {
       return 'n/a';
     }

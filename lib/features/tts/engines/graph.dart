@@ -1,70 +1,48 @@
-import 'dart:typed_data';
-
-import 'package:flutter_litert/native.dart';
-
 import '../../../core/inference/inference_options.dart';
 import '../../../core/inference/model_runner.dart';
+import '../../../core/litert/compiled_graph.dart';
 
-/// One `.tflite` file opened with the classic Interpreter, exposing its
-/// signatures with zero-copy float32 tensor views.
+/// A signature with allocated tensors; see [GraphSignature].
+typedef Sig = GraphSignature;
+
+/// One `.tflite` file compiled with the LiteRT `CompiledModel` API,
+/// exposing its signatures with zero-copy tensor views.
 class LiteRtGraph {
-  LiteRtGraph._(this._bundle);
+  LiteRtGraph._(this._graph);
 
-  final InterpreterBundle _bundle;
-  final Map<String, Sig> _sigs = {};
+  final CompiledGraph _graph;
 
-  String get accelerator => _bundle.accelerator;
-  bool get delegateActive => _bundle.delegateActive;
+  /// Where the graph actually runs, e.g. `GPU (WebGPU)` or `CPU`.
+  String get accelerator => _graph.acceleratorLabel;
 
-  static LiteRtGraph open(String path, InferenceOptions o, {int? threads}) =>
-      LiteRtGraph._(InterpreterBundle.open(path, o, threads: threads));
+  /// True when every op ran on the requested GPU/NPU.
+  bool? get fullyAccelerated => _graph.isFullyAccelerated;
 
-  List<String> get signatureKeys => _bundle.interpreter.signatureKeys;
-
-  /// Signature [key] (defaults to the first one, usually `serving_default`).
-  Sig sig([String? key]) {
-    final k = key ?? signatureKeys.first;
-    return _sigs[k] ??= Sig._(_bundle.interpreter.getSignatureRunner(k));
+  /// [threads] overrides the CPU thread count (tiny graphs run best on 1).
+  ///
+  /// With a GPU/NPU selected, only graphs passing [accelerate] use it; the
+  /// others run on the CPU. TTS pipelines are many graphs of very different
+  /// shape: measured on a GTX 1050, the Qwen3 codec decoder is ~8x faster on
+  /// WebGPU, while Kokoro's graphs are slower or fail there (see
+  /// `kokoro_engine.dart`).
+  static LiteRtGraph open(
+    String path,
+    InferenceOptions o, {
+    int? threads,
+    bool accelerate = false,
+  }) {
+    final effective = accelerate || o.accelerator == AcceleratorKind.cpu
+        ? o
+        : o.copyWith(accelerator: AcceleratorKind.cpu);
+    return LiteRtGraph._(
+      CompiledGraph.open(path, graphConfigFor(effective, threads: threads)),
+    );
   }
 
-  void close() {
-    for (final s in _sigs.values) {
-      s._runner.close();
-    }
-    _sigs.clear();
-    _bundle.close();
-  }
-}
+  List<String> get signatureKeys => _graph.signatureKeys;
 
-/// A signature with allocated tensors. Views returned by [inF]/[outF]
-/// alias native memory; re-fetch them after each [invoke] for outputs.
-class Sig {
-  Sig._(this._runner) {
-    _runner.allocateTensors();
-    // Arena memory is uninitialised; some graphs fail on garbage (NaN)
-    // inputs, e.g. during warm-up, so start from zeros.
-    for (final n in _runner.inputNames) {
-      final t = _runner.getInputTensor(n);
-      t.setTo(Uint8List(t.numBytes()));
-    }
-  }
+  /// Signature [key] (defaults to the first, usually `serving_default`).
+  Sig sig([String? key]) => _graph.signature(key);
 
-  final SignatureRunner _runner;
-
-  List<String> get inputNames => _runner.inputNames;
-  List<String> get outputNames => _runner.outputNames;
-
-  Tensor input(String name) => _runner.getInputTensor(name);
-  Tensor output(String name) => _runner.getOutputTensor(name);
-
-  Float32List inF(String name) => input(name).asFloat32View();
-  Float32List outF(String name) => output(name).asFloat32View();
-
-  void setInt32(String name, List<int> values) =>
-      input(name).setTo(Int32List.fromList(values));
-
-  void setInt64(String name, List<int> values) =>
-      input(name).setTo(Int64List.fromList(values));
-
-  void invoke() => _runner.invoke();
+  void close() => _graph.close();
 }

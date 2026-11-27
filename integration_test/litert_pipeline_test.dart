@@ -49,25 +49,20 @@ void main() {
 
   final configs = <String, InferenceOptions>{
     'cm-cpu': const InferenceOptions(accelerator: AcceleratorKind.cpu),
-    'cm-cpu-hostbuf': const InferenceOptions(
+    'cm-cpu-1t': const InferenceOptions(
       accelerator: AcceleratorKind.cpu,
-      bufferMode: BufferModeKind.hostMemory,
+      cpuThreads: 1,
     ),
     'cm-gpu-fp32': const InferenceOptions(cpuFallback: false),
     'cm-gpu-fp16': const InferenceOptions(
       precision: PrecisionKind.fp16,
       cpuFallback: false,
     ),
-    'interp-xnnpack-4t': const InferenceOptions(
-      runtime: RuntimeKind.interpreter,
-      accelerator: AcceleratorKind.cpu,
-      cpuThreads: 4,
-    ),
   };
 
   for (final MapEntry(key: name, value: options) in configs.entries) {
     testWidgets('image upscale · $name', (tester) async {
-      if (!caps.accelerators(options.runtime).contains(options.accelerator)) {
+      if (!caps.accelerators.contains(options.accelerator)) {
         markTestSkipped('$name not supported on ${caps.os}');
         return;
       }

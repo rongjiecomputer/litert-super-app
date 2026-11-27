@@ -1,9 +1,10 @@
 # LiteRT Super App
 
 A Flutter desktop app (Windows, macOS; Android compile-ready) that showcases
-on-device AI use cases running on [LiteRT](https://ai.google.dev/edge/litert)
-through the official
-[`flutter_litert`](https://github.com/google-ai-edge/flutter_litert) plugin.
+on-device AI use cases running on [LiteRT](https://ai.google.dev/edge/litert).
+Everything runs through the LiteRT **`CompiledModel` C API**, called from Dart
+FFI against the prebuilt `libLiteRt` runtime (no `flutter_litert` plugin, no
+`Interpreter`).
 
 **Use case 1 — Super-resolution:** 4× image and video upscaling with
 [Real-ESRGAN x4 v3](https://huggingface.co/litert-community/real-esrgan-x4v3-litert).
@@ -19,11 +20,9 @@ through the official
 - **Left navigation rail** on desktop (extended labels ≥ 1280 px). Phones and
   narrow windows get a bottom navigation bar instead.
 - **Per-use-case inference options**, saved between sessions:
-  - Runtime: `CompiledModel` (LiteRT 2.x) or the classic `Interpreter`.
   - Accelerator: CPU / GPU / NPU, filtered to what the current OS supports.
-  - Precision: FP32 / FP16. FP16 applies to the GPU, or to XNNPACK force-FP16 on CPU.
-  - Tensor buffers: managed or host memory.
-  - Fall back to CPU if compilation fails, CPU thread count, and tile overlap.
+  - Precision: FP32 / FP16 (GPU only).
+  - Run unsupported ops on the CPU, CPU thread count, and tile overlap.
 - **Inference cost** for each run:
   - Model load/compile time, warm-up run, RAM at load.
   - Per-tile latency (avg / p50 / p90 / min / max) and throughput.
@@ -67,8 +66,26 @@ same layout lives under the app's support directory.
 Both models ship as `.litertlm` bundles meant for LiteRT-LM's experimental
 C++ "omni" runtime. That runtime has no Windows build and no Dart bindings,
 so the app uses the raw `.tflite` graphs from each repo's `legacy/` folder
-instead. It drives them from Dart with the classic `Interpreter`. TTS is
-therefore Interpreter-only: XNNPACK on CPU, or the Metal delegate on macOS.
+instead. It drives them through `CompiledModel` by signature key, with int32 /
+int64 inputs and per-graph signatures (`prefill` / `decode`).
+
+**GPU placement is per graph.** With GPU selected, only graphs where it pays
+off run there; the rest stay on CPU. Measured on a GTX 1050 (WebGPU over
+Direct3D 12):
+
+| Graph | CPU (8T) | GPU | Placement |
+|---|---|---|---|
+| Real-ESRGAN tile (upscaling) | 589 ms | 44 ms | GPU |
+| Qwen3 codec decoder | ~5 s | ~0.6 s | GPU |
+| Qwen3 talker decode / MTP | 85 / 32 ms | 215 / 35 ms | CPU |
+| Kokoro predictor / prosody | 0.4 / 0.26 s | 3.8 / 2.4 s, and the two together exhaust 2 GB VRAM | CPU |
+| Kokoro vocoder | 9 s | invalid shaders on this adapter (silent output) | CPU |
+
+Other GPUs will differ. The WebGPU runtime reports shader validation errors
+only in its log and then returns garbage rather than failing, so check
+accelerator output (the PSNR test in `integration_test/`) when trying a new
+adapter. GPU FP16 needs the adapter's `shader-f16` feature; the app detects
+its absence and recompiles in FP32.
 
 | Engine | Download | What runs on the host (Dart) |
 |---|---|---|
@@ -106,17 +123,29 @@ therefore Interpreter-only: XNNPACK on CPU, or the Metal delegate on macOS.
 ## Requirements
 
 - Flutter 3.50+ (Dart 3.14). The UI uses `package:material_ui`.
+- **LiteRT runtime and headers (once per clone).** They are not in git:
+
+  ```sh
+  py -I tools/fetch_litert_sdk.py                       # headers + this OS's runtime
+  py -I tools/fetch_litert_sdk.py --platform android_arm64   # also Android
+  ```
+
+  The script reads a pinned snapshot of Google's `litert_prebuilts.zip` using
+  HTTP range requests, so it downloads about 40 MB instead of the 360 MB
+  archive. It fills `litert_cc_sdk/` (C/C++ headers) and
+  `litert_runtime/<platform>/` (`libLiteRt`, the GPU accelerator, and on
+  Windows `dxcompiler.dll` / `dxil.dll` from the Windows SDK or the
+  DirectXShaderCompiler release). The platform builds bundle those libraries
+  into the app: `windows/CMakeLists.txt` (next to the `.exe`), an Xcode build
+  phase on macOS (`Contents/Frameworks`) and `jniLibs` on Android.
 - **Video** (and non-WAV voice-cloning references): `ffmpeg` and `ffprobe`
   must be on PATH, or set in Settings.
   - Windows: `winget install Gyan.FFmpeg`
   - macOS: `brew install ffmpeg`
   - The app also checks WinGet Links, Scoop, Chocolatey and the Homebrew folders.
-- **Windows:** The first CMake configure downloads `flutter_litert`'s GPU
-  runtime (about 50 MB: `libLiteRt.dll`, WebGPU accelerator, DXC). GPU
-  inference runs on WebGPU over Direct3D 12.
-  - Windows SDKs older than 10.0.20348 can't compile the plugin's C11 custom
-    ops. `windows/CMakeLists.txt` works around this automatically. Installing
-    a newer SDK through the Visual Studio Installer is the cleaner fix.
+- **Windows:** x64. GPU inference runs on WebGPU over Direct3D 12; the first
+  run of a model compiles its shaders and can take tens of seconds.
+- **macOS:** Apple Silicon only (the prebuilt runtime has no x86_64 build).
 - **macOS:** App Sandbox is disabled in `macos/Runner/*.entitlements`. A
   sandboxed `HOME` would point into the app container, which hides the shared
   `~/.litert-lm` folder and the system ffmpeg. GPU runs on Metal and NPU on
@@ -135,7 +164,7 @@ flutter run -d windows        # or -d macos
 flutter analyze
 flutter test                  # tiler, options, paths, ffprobe, TTS DSP/tokenizer/G2P
 
-# Real LiteRT on the host: 5 runtime/accelerator configs + PSNR vs CPU + ffmpeg video
+# Real LiteRT on the host: CPU / GPU configs + PSNR vs CPU + ffmpeg video
 flutter test integration_test/litert_pipeline_test.dart -d windows \
   --dart-define=SAMPLE_IMAGE=path/to/image.png \
   --dart-define=SAMPLE_VIDEO=path/to/clip.mp4 \
@@ -145,7 +174,12 @@ flutter test integration_test/litert_pipeline_test.dart -d windows \
 ```sh
 # TTS engines on real LiteRT (needs the models; writes WAVs to OUT_DIR)
 flutter test integration_test/tts_pipeline_test.dart -d windows \
-  --dart-define=OUT_DIR=path/to/out [--dart-define=TTS_ENGINES=kokoro,qwen3]
+  --dart-define=OUT_DIR=path/to/out [--dart-define=TTS_ENGINES=kokoro,qwen3] \
+  [--dart-define=TTS_ACCEL=gpu]
+
+# Compile + run any .tflite and print its signatures / accelerator / timings
+$env:LITERT_SMOKE_MODEL = "path/to/model.tflite"; $env:LITERT_SMOKE_ARGS = "--gpu"
+flutter test test/litert_smoke_test.dart
 
 # Regenerate TTS goldens (tokenizer ids, mel reference); needs tokenizers + librosa
 py -I tools/tts/make_goldens.py
@@ -162,9 +196,12 @@ lib/
   core/
     paths.dart                  ~/.litert-lm resolution
     models/                     ModelSpec, catalog, download manager
+    litert/
+      ffi.dart                  dart:ffi bindings to the libLiteRt C API
+      compiled_graph.dart       CompiledModel: signatures, tensors, buffers, options
     inference/
       inference_options.dart    options + per-OS capabilities
-      model_runner.dart         CompiledModel / Interpreter behind one interface
+      model_runner.dart         single float-in/float-out runner (upscaling)
       inference_worker.dart     long-lived isolate owning the model; runs WorkerTasks
     metrics/                    RunMetrics, RSS sampler, metrics panel
     widgets/                    options panel, model banner, section cards
@@ -175,6 +212,7 @@ lib/
       dsp/        FFT, mel, Kokoro harmonic source/iSTFT, WAV, resampling
       text/       Qwen BPE tokenizer, English G2P, .npy/.npz reader
       …           worker tasks, controller, streaming player, recorder, UI
+tools/fetch_litert_sdk.py   downloads the LiteRT headers + prebuilt runtime
 tools/tts/        graph inspector, golden generator, speaker-encoder exporter
     home/ models/ settings/
 ```

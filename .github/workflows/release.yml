@@ -24,6 +24,9 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
+      - name: Fetch LiteRT runtime
+        run: python tools/fetch_litert_sdk.py
+
       - run: flutter pub get
       - run: flutter test
 
@@ -53,6 +56,9 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+
+      - name: Fetch LiteRT runtime
+        run: python3 tools/fetch_litert_sdk.py
 
       - run: flutter pub get
       - run: flutter test

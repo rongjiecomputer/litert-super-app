@@ -69,6 +69,10 @@ class KokoroEngine extends TtsEngine {
       graphs.add(pred);
       final pros = LiteRtGraph.open(f(prosodyFile), o);
       graphs.add(pros);
+      // All Kokoro graphs stay on the CPU, whatever accelerator is selected:
+      // on WebGPU the predictor/prosody are ~10x slower and exhaust 2 GB of
+      // VRAM, and the vocoder's shaders fail validation on some adapters
+      // (workgroup_size 128 > limit 64) and silently output zeros.
       final voc = LiteRtGraph.open(f(vocoderFile), o);
       graphs.add(voc);
       LiteRtGraph? g2p;

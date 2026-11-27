@@ -66,12 +66,11 @@ class TtsController extends ChangeNotifier {
   TtsController({
     required this.settings,
     required this.models,
-    required PlatformCaps caps,
+    required this.caps,
     required this.voicesDir,
     required String tempDir,
-  }) : caps = caps.restrictTo(const [RuntimeKind.interpreter]),
-       recorder = VoiceRecorder(tempDir) {
-    options = settings.inferenceOptions(useCaseId, this.caps);
+  }) : recorder = VoiceRecorder(tempDir) {
+    options = settings.inferenceOptions(useCaseId, caps);
     final pr = settings.useCaseParams(useCaseId);
     engine = TtsEngineKind.values.firstWhere(
       (e) => e.name == pr['engine'],

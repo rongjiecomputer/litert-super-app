@@ -57,17 +57,17 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
-# flutter_litert builds its custom ops as C11 (/std:c11), which turns on
-# MSVC's conformant preprocessor. Windows SDK headers older than 10.0.20348
-# fail to compile under it (oaidl.h / propidlbase.h syntax errors), so drop
-# the C standard flag for that target on old SDKs. Installing a newer
-# Windows SDK makes this a no-op.
-if(TARGET tflite_custom_ops AND CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION
-   AND CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION VERSION_LESS "10.0.20348")
-  message(STATUS "ai_litert: Windows SDK ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION} "
-                 "is too old for /std:c11; building tflite_custom_ops in default C mode")
-  set_target_properties(tflite_custom_ops PROPERTIES C_STANDARD 90)
+# LiteRT runtime: libLiteRt.dll, the WebGPU (Direct3D 12) GPU accelerator and
+# the DirectX Shader Compiler runtime it needs. They are not in git; fetch
+# them once with `py -I tools/fetch_litert_sdk.py`.
+set(LITERT_RUNTIME_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../litert_runtime/windows_x86_64")
+if(NOT EXISTS "${LITERT_RUNTIME_DIR}/libLiteRt.dll")
+  message(FATAL_ERROR
+    "LiteRT runtime not found in ${LITERT_RUNTIME_DIR}. "
+    "Run `py -I tools/fetch_litert_sdk.py` from the repository root.")
 endif()
+file(GLOB LITERT_RUNTIME_DLLS "${LITERT_RUNTIME_DIR}/*.dll")
 
 
 # === Installation ===
@@ -98,6 +98,12 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# LiteRT lives next to the executable: Dart loads libLiteRt.dll from there and
+# the runtime finds the accelerator (and dxcompiler/dxil) by bare file name.
+install(FILES ${LITERT_RUNTIME_DLLS}
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
 
 # Copy the native assets provided by the hook/build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")

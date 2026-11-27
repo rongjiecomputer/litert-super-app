@@ -50,7 +50,7 @@ class LoadTtsEngineTask extends WorkerTask<TtsLoadResult> {
     return TtsLoadResult(
       LoadInfo(
         optionsSummary: options.summary,
-        runtimeLabel: '${kind.label} · TFLite Interpreter',
+        runtimeLabel: '${kind.label} · LiteRT CompiledModel',
         requested: [engine.accelerator],
         actual: [engine.accelerator],
         didFallback: false,

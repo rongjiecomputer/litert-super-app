@@ -19,7 +19,7 @@ android {
         applicationId = "com.example.ai_litert"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = 24 // flutter_litert requirement
+        minSdk = 26 // libLiteRt.so is built for Android API 26+
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
@@ -27,7 +27,12 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // The prebuilt LiteRT runtime is arm64 only
+        // (py -I tools/fetch_litert_sdk.py --platform android_arm64).
+        ndk { abiFilters += "arm64-v8a" }
     }
+
+    sourceSets["main"].jniLibs.srcDir("../../litert_runtime/android_arm64")
 
     buildTypes {
         release {

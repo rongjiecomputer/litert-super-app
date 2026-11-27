@@ -21,8 +21,8 @@ class ModelFile {
 
 /// Static description of a downloadable LiteRT model.
 ///
-/// CompiledModel does not expose tensor shapes, so they are declared here
-/// and validated against the runtime's reported byte sizes at load time.
+/// Tensor shapes are declared here (they also document the model) and
+/// validated against the compiled graph's reported tensors at load time.
 /// Non-image models leave the shape/layout fields at their defaults and list
 /// their additional files in [extraFiles].
 class ModelSpec {
