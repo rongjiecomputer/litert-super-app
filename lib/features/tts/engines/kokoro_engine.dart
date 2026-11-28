@@ -8,38 +8,43 @@ import '../../../core/inference/inference_options.dart';
 import '../../../core/inference/inference_worker.dart';
 import '../../../core/models/model_catalog.dart' show KokoroVoices;
 import '../dsp/kokoro_dsp.dart';
+import '../dsp/time_stretch.dart';
 import '../text/english_g2p.dart';
 import 'graph.dart';
 import 'tts_engine.dart';
 
-/// Kokoro-82M (StyleTTS2 + iSTFTNet) on the bucketed LiteRT graphs.
+/// Kokoro-82M (StyleTTS2 + iSTFTNet) on the two fused LiteRT-LM graphs.
 ///
-/// Per chunk (≤126 phonemes, ≤512 frames ≈ 12.8 s):
-/// predictor → host duration rounding + alignment → prosody → host
-/// harmonic source + STFT → vocoder → host iSTFT. English only: text is
-/// phonemized on the host with the CMU dictionary plus a LiteRT neural G2P
-/// for unknown words.
+/// Per chunk (≤126 phonemes, ≤384 frames ≈ 9.6 s):
+/// acoustic (text encoder, duration predictor, prosody, decoder; CPU, uses
+/// the `bidirectional_lstm` custom op) → vocoder (GPU when the runtime can
+/// compile it, else CPU) → host iSTFT. English only: text is phonemized on
+/// the host with the CMU dictionary plus a LiteRT neural G2P for unknown
+/// words. The graphs have no speed input, so the speaking rate is applied
+/// to the audio with a pitch-preserving time stretch.
+///
+/// Style: a voice row is 256 floats; the acoustic graph (duration predictor)
+/// takes the second half and the vocoder (decoder) the first, as in the
+/// reference model.
 class KokoroEngine extends TtsEngine {
   KokoroEngine._(
-    this._predictor,
-    this._prosody,
+    this._acoustic,
     this._vocoder,
     this._g2pGraph,
     this._vocab,
     this._cmu,
     this._voiceFiles,
+    this._vocoderNote,
   ) {
-    _pred = _predictor.sig();
-    _pros = _prosody.sig();
+    _ac = _acoustic.sig();
     _voc = _vocoder.sig();
-    _tokens = _pred.input('args_0').shape.last;
-    _frames = _pros.input('args_4').shape.last;
+    _tokens = _ac.input('phoneme_ids').shape.last;
+    _frames = _ac.output('acoustic_features').shape.last;
     _g2p = _g2pGraph?.sig();
   }
 
-  static const predictorFile = 'kokoro_predictor.tflite';
-  static const prosodyFile = 'kokoro_prosody.tflite';
-  static const vocoderFile = 'kokoro_vocoder.tflite';
+  static const acousticFile = 'acoustic.tflite';
+  static const vocoderFile = 'vocoder.tflite';
   static const g2pFile = 'dp_g2p_litert.tflite';
   static const configFile = 'config.json';
   static const cmuFile = 'cmudict.txt';
@@ -47,17 +52,22 @@ class KokoroEngine extends TtsEngine {
 
   static const englishVoices = KokoroVoices.english;
 
+  /// Floats per voice row; the first [halfDim] drive the decoder, the rest
+  /// the duration predictor.
   static const styleDim = 256;
+  static const halfDim = styleDim ~/ 2;
 
-  final LiteRtGraph _predictor, _prosody, _vocoder;
+  final LiteRtGraph _acoustic, _vocoder;
   final LiteRtGraph? _g2pGraph;
   final Map<String, int> _vocab;
   final Map<String, String> _cmu;
   final Map<String, String> _voiceFiles;
-  final _dsp = KokoroDsp.kokoro82m();
+
+  /// Why the vocoder runs on the CPU although a GPU was requested.
+  final String? _vocoderNote;
   final Map<String, Float32List> _styles = {};
 
-  late final Sig _pred, _pros, _voc;
+  late final Sig _ac, _voc;
   late final Sig? _g2p;
   late final int _tokens, _frames;
 
@@ -65,16 +75,24 @@ class KokoroEngine extends TtsEngine {
     String f(String rel) => p.joinAll([dir, ...rel.split('/')]);
     final graphs = <LiteRtGraph>[];
     try {
-      final pred = LiteRtGraph.open(f(predictorFile), o);
-      graphs.add(pred);
-      final pros = LiteRtGraph.open(f(prosodyFile), o);
-      graphs.add(pros);
-      // All Kokoro graphs stay on the CPU, whatever accelerator is selected:
-      // on WebGPU the predictor/prosody are ~10x slower and exhaust 2 GB of
-      // VRAM, and the vocoder's shaders fail validation on some adapters
-      // (workgroup_size 128 > limit 64) and silently output zeros.
-      final voc = LiteRtGraph.open(f(vocoderFile), o);
-      graphs.add(voc);
+      // The acoustic graph stays on the CPU: it holds the custom LSTM op,
+      // which only has a CPU kernel.
+      final acoustic = LiteRtGraph.open(f(acousticFile), o);
+      graphs.add(acoustic);
+      LiteRtGraph vocoder;
+      String? note;
+      try {
+        vocoder = LiteRtGraph.open(f(vocoderFile), o, accelerate: true);
+      } on Object catch (e) {
+        // Some GPU runtimes (e.g. WebGPU in the current LiteRT) fail to
+        // compile the vocoder; run it on the CPU instead.
+        vocoder = LiteRtGraph.open(
+          f(vocoderFile),
+          o.copyWith(accelerator: AcceleratorKind.cpu),
+        );
+        note = 'GPU unavailable for the vocoder: ${e.toString().split('\n').first}';
+      }
+      graphs.add(vocoder);
       LiteRtGraph? g2p;
       if (File(f(g2pFile)).existsSync()) {
         // Tiny graph: one thread avoids pool overhead.
@@ -92,13 +110,13 @@ class KokoroEngine extends TtsEngine {
       }
       if (voices.isEmpty) throw StateError('No Kokoro voices in ${vd.path}');
       return KokoroEngine._(
-        pred,
-        pros,
-        voc,
+        acoustic,
+        vocoder,
         g2p,
         EnglishPhonemizer.loadVocab(f(configFile)),
         EnglishPhonemizer.loadCmu(f(cmuFile)),
         voices,
+        note,
       );
     } catch (_) {
       for (final g in graphs) {
@@ -112,7 +130,12 @@ class KokoroEngine extends TtsEngine {
   TtsEngineKind get kind => TtsEngineKind.kokoro;
 
   @override
-  String get accelerator => _vocoder.accelerator;
+  String get accelerator => _vocoderNote == null
+      ? 'acoustic CPU · vocoder ${_vocoder.accelerator}'
+      : 'CPU (GPU unavailable for the vocoder)';
+
+  @override
+  String? get fallbackReason => _vocoderNote;
 
   @override
   List<TtsVoice> get voices {
@@ -138,8 +161,7 @@ class KokoroEngine extends TtsEngine {
 
   @override
   void close() {
-    _predictor.close();
-    _prosody.close();
+    _acoustic.close();
     _vocoder.close();
     _g2pGraph?.close();
   }
@@ -148,14 +170,11 @@ class KokoroEngine extends TtsEngine {
   Future<void> warmUp(WorkerContext ctx) async {
     final ids = List.filled(_tokens, 0);
     ids[1] = _vocab['a']!;
-    _pred.setInt64('args_0', ids);
-    _pred.inF('args_2')
-      ..fillRange(0, _tokens, 0)
-      ..fillRange(0, 3, 1);
-    _pred.invoke();
+    _ac.setInt64('phoneme_ids', ids);
+    _ac.setInt64('phoneme_length', [3]);
+    _ac.invoke();
     await ctx.checkpoint();
-    _pros.invoke();
-    await ctx.checkpoint();
+    _voc.input('speech_frame_length').asInt32View()[0] = 1;
     _voc.invoke();
     _g2p?.invoke();
   }
@@ -275,11 +294,17 @@ class KokoroEngine extends TtsEngine {
       fallback: _g2p == null ? null : _neuralG2p,
       british: req.voiceId.startsWith('b'),
     );
-    final rng = math.Random(req.seed);
+    final speed = req.speed.clamp(0.5, 2.0).toDouble();
     final total = Stopwatch()..start();
     double? firstAudio;
     var samples = 0, chunkCount = 0;
-    final stages = <String, double>{'g2p': 0, 'predictor': 0, 'prosody': 0, 'source': 0, 'vocoder': 0, 'istft': 0};
+    final stages = <String, double>{
+      'g2p': 0,
+      'acoustic': 0,
+      'vocoder': 0,
+      'istft': 0,
+      'stretch': 0,
+    };
     final sw = Stopwatch()..start();
     double lap() {
       final ms = sw.elapsedMicroseconds / 1000;
@@ -293,13 +318,17 @@ class KokoroEngine extends TtsEngine {
     stages['g2p'] = lap();
     while (queue.isNotEmpty) {
       final tokens = queue.removeAt(0);
-      final pcm = _runChunk(tokens, req, rng, stages, lap);
+      var pcm = _runChunk(tokens, req.voiceId, stages, lap);
       if (pcm == null) {
-        // Too many frames for the bucket: split at a word boundary.
+        // Too many frames for the graph: split at a word boundary.
         final mid = tokens.lastIndexOf(_vocab[' ']!, tokens.length ~/ 2 + 8);
         final cut = mid > 0 ? mid : tokens.length ~/ 2;
         queue.insertAll(0, [tokens.sublist(0, cut), tokens.sublist(cut + (mid > 0 ? 1 : 0))]);
         continue;
+      }
+      if ((speed - 1).abs() > 1e-3) {
+        pcm = timeStretch(pcm, speed, sampleRate: sampleRate);
+        stages['stretch'] = stages['stretch']! + lap();
       }
       firstAudio ??= total.elapsedMicroseconds / 1000;
       samples += pcm.length;
@@ -318,84 +347,42 @@ class KokoroEngine extends TtsEngine {
     );
   }
 
-  /// Runs one chunk; returns null if its frames exceed the bucket.
+  /// Runs one chunk; returns null if its frames exceed the graph's limit.
   Float32List? _runChunk(
     List<int> tokens,
-    TtsRequest req,
-    math.Random rng,
+    String voice,
     Map<String, double> stages,
     double Function() lap,
   ) {
-    final t = tokens.length + 2;
-    final style = _style(req.voiceId, tokens.length);
+    final style = _style(voice, tokens.length);
     final ids = List.filled(_tokens, 0)..setAll(1, tokens);
 
     lap();
-    _pred.setInt64('args_0', ids);
-    _pred.inF('args_1').setAll(0, style);
-    _pred.inF('args_2')
-      ..fillRange(0, _tokens, 0)
-      ..fillRange(0, t, 1);
-    _pred.invoke();
-    final dur = _pred.outF('output_0');
-    final speed = req.speed.clamp(0.5, 2.0);
-    final durations = [
-      for (var i = 0; i < t; i++) math.max(1, (dur[i] / speed).round()),
-    ];
-    final frames = durations.fold(0, (a, b) => a + b);
-    stages['predictor'] = stages['predictor']! + lap();
-    if (frames > _frames) {
-      if (tokens.length < 4) {
-        // Can't split further; truncate the alignment.
-        return _finish(durations, _frames, style, rng, stages, lap);
-      }
-      return null;
+    _ac.setInt64('phoneme_ids', ids);
+    _ac.setInt64('phoneme_length', [tokens.length + 2]);
+    _ac.inF('speaker_style').setAll(0, Float32List.sublistView(style, halfDim));
+    _ac.invoke();
+    var frames = _ac.output('speech_frame_length').asInt64View()[0];
+    stages['acoustic'] = stages['acoustic']! + lap();
+    if (frames >= _frames) {
+      // The graph's frame budget is exhausted (it clamps the length).
+      if (tokens.length >= 4) return null;
+      frames = _frames; // Can't split further; keep what fits.
     }
-    return _finish(durations, frames, style, rng, stages, lap);
-  }
+    if (frames <= 0) return Float32List(0);
 
-  Float32List _finish(
-    List<int> durations,
-    int frames,
-    Float32List style,
-    math.Random rng,
-    Map<String, double> stages,
-    double Function() lap,
-  ) {
-    _pros.inF('args_0').setAll(0, _pred.outF('output_1'));
-    _pros.inF('args_1').setAll(0, _pred.outF('output_2'));
-    final aln = _pros.inF('args_2')..fillRange(0, _tokens * _frames, 0);
-    var f = 0;
-    for (var i = 0; i < durations.length && f < _frames; i++) {
-      for (var k = 0; k < durations[i] && f < _frames; k++) {
-        aln[i * _frames + f++] = 1;
-      }
-    }
-    _pros.inF('args_3').setAll(0, style);
-    _pros.inF('args_4')
-      ..fillRange(0, _frames, 0)
-      ..fillRange(0, frames, 1);
-    _pros.invoke();
-    stages['prosody'] = stages['prosody']! + lap();
-
-    final f0 = Float32List.fromList(_pros.outF('output_1'));
-    final har = _dsp.harmonicSource(f0, rng);
-    stages['source'] = stages['source']! + lap();
-
-    _voc.inF('args_0').setAll(0, _pros.outF('output_0'));
-    _voc.inF('args_1').setAll(0, f0);
-    _voc.inF('args_2').setAll(0, _pros.outF('output_2'));
-    _voc.inF('args_3').setAll(0, har);
-    _voc.inF('args_4').setAll(0, style);
-    _voc.inF('args_5')
-      ..fillRange(0, _frames, 0)
-      ..fillRange(0, frames, 1);
+    _voc.inF('acoustic_features').setAll(0, _ac.outF('acoustic_features'));
+    _voc.inF('energy_contour').setAll(0, _ac.outF('energy_contour'));
+    _voc.inF('pitch_contour').setAll(0, _ac.outF('pitch_contour'));
+    _voc.inF('speaker_style').setAll(0, Float32List.sublistView(style, 0, halfDim));
+    _voc.input('speech_frame_length').asInt32View()[0] = frames;
     _voc.invoke();
     stages['vocoder'] = stages['vocoder']! + lap();
 
-    final mag = _voc.outF('output_0'), phase = _voc.outF('output_1');
+    final mag = _voc.outF('magnitude_spectrogram');
+    final phase = _voc.outF('phase_spectrogram');
     final stftFrames = mag.length ~/ KokoroDsp.bins;
-    final pcm = KokoroDsp.istft(mag, phase, stftFrames, frames * 600);
+    final pcm = KokoroDsp.istft(mag, phase, stftFrames, frames * KokoroDsp.samplesPerFrame);
     stages['istft'] = stages['istft']! + lap();
     return pcm;
   }

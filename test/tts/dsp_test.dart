@@ -7,6 +7,7 @@ import 'package:ai_litert/features/tts/dsp/audio.dart';
 import 'package:ai_litert/features/tts/dsp/fft.dart';
 import 'package:ai_litert/features/tts/dsp/kokoro_dsp.dart';
 import 'package:ai_litert/features/tts/dsp/mel.dart';
+import 'package:ai_litert/features/tts/dsp/time_stretch.dart';
 import 'package:ai_litert/features/tts/engines/sampling.dart';
 import 'package:ai_litert/features/tts/text/npy.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -84,24 +85,37 @@ void main() {
         expect(y[i], closeTo(x[i], 1e-4), reason: 'sample $i');
       }
     });
+  });
 
-    test('harmonic source has the vocoder layout and is seed-deterministic', () {
-      // Numerical parity with the reference was checked offline against
-      // the Kokoro ONNX export (har magnitude correlation 0.98, final
-      // waveform correlation 0.997); here we guard shape and determinism.
-      final dsp = KokoroDsp.kokoro82m();
-      final f0 = Float32List(40)..fillRange(20, 40, 200);
-      final a = dsp.harmonicSource(f0, math.Random(1));
-      final b = dsp.harmonicSource(f0, math.Random(1));
-      final c = dsp.harmonicSource(f0, math.Random(2));
-      final frames = KokoroDsp.stftFrames(40 * 300);
-      expect(a.length, 22 * frames);
-      expect(a, b);
-      expect(a, isNot(c));
-      expect(a.every((v) => v.isFinite), isTrue);
-      // Phases (second half of the channels) lie in [-pi, pi].
-      for (var i = 11 * frames; i < a.length; i++) {
-        expect(a[i].abs(), lessThanOrEqualTo(math.pi + 1e-6));
+  group('time stretch', () {
+    // Zero crossings per second of a mono signal.
+    double crossingsPerSecond(Float32List y) {
+      var n = 0;
+      for (var i = 1; i < y.length; i++) {
+        if ((y[i - 1] < 0) != (y[i] < 0)) n++;
+      }
+      return n / (y.length / 24000);
+    }
+
+    final tone = Float32List.fromList([
+      for (var i = 0; i < 24000; i++) 0.5 * math.sin(2 * math.pi * 220 * i / 24000),
+    ]);
+
+    test('rate 1 returns the input', () {
+      expect(identical(timeStretch(tone, 1.0), tone), isTrue);
+    });
+
+    test('changes the duration but keeps the pitch and level', () {
+      for (final rate in [0.6, 0.8, 1.5, 2.0]) {
+        final y = timeStretch(tone, rate);
+        expect(y.length, closeTo(tone.length / rate, 2), reason: 'rate $rate');
+        // 220 Hz sine → 440 zero crossings per second, whatever the rate.
+        expect(crossingsPerSecond(y), closeTo(440, 12), reason: 'rate $rate');
+        var peak = 0.0;
+        for (var i = 1000; i < y.length - 1000; i++) {
+          peak = math.max(peak, y[i].abs());
+        }
+        expect(peak, closeTo(0.5, 0.06), reason: 'rate $rate');
       }
     });
   });

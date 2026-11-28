@@ -94,6 +94,10 @@ abstract class TtsEngine implements WorkerEngine {
   /// Human accelerator label for the load summary.
   String get accelerator;
 
+  /// Why part of the pipeline runs on the CPU although a GPU was requested
+  /// (null when nothing fell back).
+  String? get fallbackReason => null;
+
   /// Runs every graph once so the first real request doesn't pay for
   /// lazy allocation (XNNPACK packing can take seconds per graph).
   Future<void> warmUp(WorkerContext ctx);

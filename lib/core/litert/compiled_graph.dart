@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'custom_ops.dart';
 import 'ffi.dart';
 
 /// Where a [CompiledGraph] should run, independent of app-level settings.
@@ -224,6 +225,7 @@ class CompiledGraph {
 
       api.check(api.createOptions(out), 'CreateOptions');
       options = out.value;
+      registerCustomOps(api, options);
       api.check(
         api.setOptionsHardwareAccelerators(options, config.hardwareMask),
         'SetOptionsHardwareAccelerators',

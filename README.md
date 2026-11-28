@@ -64,10 +64,22 @@ same layout lives under the app's support directory.
 ## Text to speech
 
 Both models ship as `.litertlm` bundles meant for LiteRT-LM's experimental
-C++ "omni" runtime. That runtime has no Windows build and no Dart bindings,
-so the app uses the raw `.tflite` graphs from each repo's `legacy/` folder
-instead. It drives them through `CompiledModel` by signature key, with int32 /
-int64 inputs and per-graph signatures (`prefill` / `decode`).
+C++ "omni" runtime, which has no Windows build and no Dart bindings. The two
+engines get around that differently:
+
+- **Qwen3-TTS** uses the raw `.tflite` graphs from the repo's `legacy/` folder,
+  driven through `CompiledModel` by signature key, with int32 / int64 inputs
+  and per-graph signatures (`prefill` / `decode`).
+- **Kokoro** uses the quantized graphs inside its `.litertlm`. The sections of
+  that container are plain `.tflite` files, so the app downloads
+  `kokoro_int8_fp16.litertlm`, unpacks it itself
+  (`lib/core/models/litertlm.dart`, the same split as `litert-lm unpack`),
+  keeps the acoustic and vocoder graphs plus the English voices, and drops the
+  bundle. The acoustic graph contains a custom `bidirectional_lstm` op that
+  `libLiteRt` does not ship: `native/bidirectional_lstm.c` (a port of LiteRT's
+  reference kernel) is compiled by a Dart build hook (`hook/build.dart`, needs a
+  C toolchain) and registered through `LiteRtAddCustomOpKernelOption`.
+  `tools/tts/check_bidirectional_lstm.py` checks it against NumPy.
 
 **GPU placement is per graph.** With GPU selected, only graphs where it pays
 off run there; the rest stay on CPU. Measured on a GTX 1050 (WebGPU over
@@ -78,10 +90,10 @@ Direct3D 12):
 | Real-ESRGAN tile (upscaling) | 589 ms | 44 ms | GPU |
 | Qwen3 codec decoder | ~5 s | ~0.6 s | GPU |
 | Qwen3 talker decode / MTP | 85 / 32 ms | 215 / 35 ms | CPU |
-| Kokoro predictor / prosody | 0.4 / 0.26 s | 3.8 / 2.4 s, and the two together exhaust 2 GB VRAM | CPU |
-| Kokoro vocoder | 9 s | invalid shaders on this adapter (silent output) | CPU |
+| Kokoro acoustic (INT8) | 0.26–0.33 s | not possible: the custom LSTM op only has a CPU kernel | CPU |
+| Kokoro vocoder (INT8, 9.6 s of audio) | 7.5–9 s | fails to compile on WebGPU (see below) | CPU, GPU tried first |
 
-Other GPUs will differ. The WebGPU runtime reports shader validation errors
+The Kokoro vocoder fails to compile on WebGPU with `Unable to parse bc coord for BATCH axis`, caused by the `FULLY_CONNECTED` over `[1, 230400, 9]` in the harmonic source (`m_source.l_linear`). It does the same on LiteRT 2.4.0 and on the 20261101 and 20261126 nightlies, with either `.litertlm` variant and with the GPU option knobs we tried. The engine requests the GPU for the vocoder and falls back to the CPU when compiling fails, so adapters or runtimes that handle it get the GPU. Other GPUs will differ. The WebGPU runtime reports shader validation errors
 only in its log and then returns garbage rather than failing, so check
 accelerator output (the PSNR test in `integration_test/`) when trying a new
 adapter. GPU FP16 needs the adapter's `shader-f16` feature; the app detects
@@ -89,12 +101,13 @@ its absence and recompiles in FP32.
 
 | Engine | Download | What runs on the host (Dart) |
 |---|---|---|
-| Kokoro-82M | ~433 MB: predictor, prosody, vocoder (FP32), neural G2P, CMUdict, 28 voices | Text normalisation, CMUdict and neural G2P to misaki IPA, duration rounding and alignment, hn-NSF harmonic source + STFT, iSTFT |
+| Kokoro-82M | ~351 MB: `.litertlm` bundle (295 MB, unpacked: INT8 acoustic + vocoder, 28 voices), neural G2P, CMUdict | Text normalisation, CMUdict and neural G2P to misaki IPA, iSTFT, speaking rate (WSOLA time stretch) |
 | Qwen3-TTS 0.6B | ~1.9 GB: INT4 talker, FP32 MTP, FP32 codec decoder, embedding tables, tokenizer | Qwen2 BPE tokenizer, text-embedding lookup and projection MLP, KV-cache handling, top-k/temperature sampling, codec windowing |
 
 - **Kokoro** is English-only on this path (US and GB voices); the
-  multilingual front end is part of the omni runtime. Each chunk runs a fixed
-  12.8 s bucket, so short texts cost as much as long ones.
+  multilingual front end is part of the omni runtime. The vocoder graph has a
+  fixed 9.6 s output, so short texts cost as much as long ones. The graphs
+  have no speed input, so the speed slider time-stretches the audio.
 - **Qwen3-TTS** is a port of the reference host loop
   (`qwen3_tts_pipeline.py` in litert-samples). Audio starts after the first
   16 codec frames and then streams in 3 s windows. On CPU it is usually slower
@@ -209,7 +222,7 @@ lib/
     upscale/      tiler (pure Dart), worker tasks, ffmpeg pipeline, controller, UI
     tts/
       engines/    Kokoro + Qwen3-TTS pipelines (WorkerEngine), speaker encoder, sampling
-      dsp/        FFT, mel, Kokoro harmonic source/iSTFT, WAV, resampling
+      dsp/        FFT, mel, Kokoro iSTFT, WSOLA time stretch, WAV, resampling
       text/       Qwen BPE tokenizer, English G2P, .npy/.npz reader
       …           worker tasks, controller, streaming player, recorder, UI
 tools/fetch_litert_sdk.py   downloads the LiteRT headers + prebuilt runtime

@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 import '../paths.dart';
+import 'litertlm.dart';
 import 'model_catalog.dart';
 import 'model_spec.dart';
 
@@ -67,9 +69,19 @@ class ModelManager extends ChangeNotifier {
   bool isReady(ModelSpec spec) => stateOf(spec).status == ModelStatus.ready;
 
   /// Approximate bytes still to download for [spec]'s required files.
-  int missingBytes(ModelSpec spec) => spec.requiredFiles
-      .where((f) => !hasFile(spec, f.relPath))
-      .fold(0, (a, f) => a + f.approxBytes);
+  int missingBytes(ModelSpec spec) {
+    var bytes = 0;
+    var bundleMissing = false;
+    for (final f in spec.requiredFiles) {
+      if (hasFile(spec, f.relPath)) continue;
+      if (spec.bundleEntry(f.relPath) != null) {
+        bundleMissing = true;
+      } else {
+        bytes += f.approxBytes;
+      }
+    }
+    return bytes + (bundleMissing ? spec.bundle!.approxBytes : 0);
+  }
 
   void refresh() {
     for (final spec in ModelCatalog.all) {
@@ -113,15 +125,44 @@ class ModelManager extends ChangeNotifier {
   }
 
   /// Downloads every missing required file of [spec], one after another.
+  /// Files that come from a `.litertlm` bundle are unpacked from a single
+  /// download of the bundle, which is then discarded.
   Future<void> download(ModelSpec spec) async {
     if (_downloads.containsKey(spec.id)) return;
     final dl = _Download();
     _downloads[spec.id] = dl;
-    final missing = [
-      for (final f in spec.requiredFiles)
-        if (!hasFile(spec, f.relPath)) f,
+    final jobs = <_Fetch>[];
+    for (final f in spec.requiredFiles) {
+      if (hasFile(spec, f.relPath) || spec.bundleEntry(f.relPath) != null) continue;
+      jobs.add(
+        _Fetch(f.uri, f.relPath.replaceAll('/', '_'), f.approxBytes, (part) async {
+          final target = File(fileOf(spec, f.relPath));
+          target.parent.createSync(recursive: true);
+          if (target.existsSync()) target.deleteSync();
+          // Same volume (both under the root) so rename is atomic.
+          part.renameSync(target.path);
+        }),
+      );
+    }
+    final bundle = spec.bundle;
+    final entries = [
+      if (bundle != null)
+        for (final e in bundle.entries)
+          if (!hasFile(spec, e.relPath)) e,
     ];
-    var total = missing.fold<int>(0, (a, f) => a + f.approxBytes);
+    if (bundle != null && entries.isNotEmpty) {
+      jobs.add(
+        _Fetch(bundle.uri, 'bundle.litertlm', bundle.approxBytes, (part) async {
+          final jobsToRun = [
+            for (final e in entries)
+              (fileOf(spec, e.relPath), e.dataType, e.key, e.value),
+          ];
+          await _unpackInIsolate(part.path, jobsToRun);
+          part.deleteSync();
+        }),
+      );
+    }
+    var total = jobs.fold<int>(0, (a, j) => a + j.approxBytes);
     var done = 0;
     _set(
       spec,
@@ -130,18 +171,18 @@ class ModelManager extends ChangeNotifier {
     String? partPath;
     IOSink? sink;
     try {
-      for (final file in missing) {
+      for (final job in jobs) {
         partPath = p.join(
           paths.downloading,
-          '${spec.id}--${file.relPath.replaceAll('/', '_')}.part',
+          '${spec.id}--${job.partName}.part',
         );
-        final res = await dl.client.send(http.Request('GET', file.uri));
+        final res = await dl.client.send(http.Request('GET', job.uri));
         if (res.statusCode != 200) {
-          throw HttpException('HTTP ${res.statusCode}', uri: file.uri);
+          throw HttpException('HTTP ${res.statusCode}', uri: job.uri);
         }
         // Correct the estimate once the real size is known.
         if (res.contentLength != null) {
-          total += res.contentLength! - file.approxBytes;
+          total += res.contentLength! - job.approxBytes;
         }
         Directory(paths.downloading).createSync(recursive: true);
         final part = File(partPath);
@@ -168,11 +209,7 @@ class ModelManager extends ChangeNotifier {
         await sink.close();
         sink = null;
         done += received;
-        final target = File(fileOf(spec, file.relPath));
-        target.parent.createSync(recursive: true);
-        if (target.existsSync()) target.deleteSync();
-        // Same volume (both under the root) so rename is atomic.
-        part.renameSync(target.path);
+        await job.finish(part);
         partPath = null;
       }
       _downloads.remove(spec.id);
@@ -232,6 +269,24 @@ class ModelManager extends ChangeNotifier {
     _states[spec.id] = state;
     notifyListeners();
   }
+}
+
+/// Unpacks a bundle off the UI isolate. A top-level function so the isolate
+/// closure captures only its (sendable) arguments, not the download state.
+Future<void> _unpackInIsolate(
+  String bundlePath,
+  List<(String target, int dataType, String key, String value)> jobs,
+) => Isolate.run(() => unpackLitertLm(bundlePath, jobs));
+
+/// One HTTP download: stored in `downloading/<model>--<partName>.part`, then
+/// handed to [finish] to move or unpack.
+class _Fetch {
+  _Fetch(this.uri, this.partName, this.approxBytes, this.finish);
+
+  final Uri uri;
+  final String partName;
+  final int approxBytes;
+  final Future<void> Function(File part) finish;
 }
 
 class _Download {

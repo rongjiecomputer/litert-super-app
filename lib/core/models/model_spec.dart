@@ -19,6 +19,38 @@ class ModelFile {
   Uri get uri => Uri.parse(url);
 }
 
+/// A file taken out of a downloaded `.litertlm` bundle: the first section of
+/// [dataType] (a `LitertLmType` value) whose metadata has [key] = [value].
+class BundleEntry {
+  const BundleEntry(
+    this.relPath,
+    this.approxBytes, {
+    required this.dataType,
+    required this.key,
+    required this.value,
+  });
+
+  final String relPath;
+  final int approxBytes;
+  final int dataType;
+  final String key;
+  final String value;
+}
+
+/// A `.litertlm` bundle that is downloaded once and split into plain files
+/// (what `litert-lm unpack` does). The bundle itself is not kept.
+class ModelBundle {
+  const ModelBundle(this.url, this.approxBytes, this.entries);
+
+  final String url;
+
+  /// Size of the whole bundle download.
+  final int approxBytes;
+  final List<BundleEntry> entries;
+
+  Uri get uri => Uri.parse(url);
+}
+
 /// Static description of a downloadable LiteRT model.
 ///
 /// Tensor shapes are declared here (they also document the model) and
@@ -39,6 +71,7 @@ class ModelSpec {
     this.inputLayout = TensorLayout.nhwc,
     this.outputLayout = TensorLayout.nhwc,
     this.extraFiles = const [],
+    this.bundle,
     this.license,
   });
 
@@ -66,14 +99,30 @@ class ModelSpec {
   /// Additional files beyond [fileName].
   final List<ModelFile> extraFiles;
 
+  /// When set, [fileName] and the model's main files come from this bundle
+  /// instead of being downloaded individually; [approxBytes] then covers the
+  /// bundle plus [extraFiles].
+  final ModelBundle? bundle;
+
   Uri get downloadUrl => Uri.parse(
     'https://huggingface.co/$hfRepo/resolve/main/${hfPath ?? fileName}',
   );
   /// Every file of the model, primary first.
   List<ModelFile> get files => [
-    ModelFile(fileName, downloadUrl.toString(), approxBytes - _extraBytes),
+    if (bundle case final b?)
+      for (final e in b.entries) ModelFile(e.relPath, b.url, e.approxBytes)
+    else
+      ModelFile(fileName, downloadUrl.toString(), approxBytes - _extraBytes),
     ...extraFiles,
   ];
+
+  /// The bundle entry that produces [relPath], if any.
+  BundleEntry? bundleEntry(String relPath) {
+    for (final e in bundle?.entries ?? const <BundleEntry>[]) {
+      if (e.relPath == relPath) return e;
+    }
+    return null;
+  }
 
   /// Files that must exist for the model to be usable.
   List<ModelFile> get requiredFiles =>

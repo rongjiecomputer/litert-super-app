@@ -45,6 +45,9 @@ dependencies:
   flutter_soloud: ^5.4.0
   record: ^7.2.0
   ffi: ^2.2.0
+  hooks: ^2.2.0
+  code_assets: ^2.2.0
+  native_toolchain_c: ^0.19.6
 
 dev_dependencies:
   flutter_test:

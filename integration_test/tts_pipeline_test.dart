@@ -90,7 +90,7 @@ void main() {
 
   test('Kokoro synthesizes English text', () async {
     if (!enginesDefine.contains('kokoro') ||
-        !File(p.join(kokoroDir(), 'kokoro_vocoder.tflite')).existsSync()) {
+        !File(p.join(kokoroDir(), 'vocoder.tflite')).existsSync()) {
       markTestSkipped('Kokoro not downloaded');
       return;
     }

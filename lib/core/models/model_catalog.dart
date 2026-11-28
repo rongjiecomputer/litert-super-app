@@ -1,3 +1,4 @@
+import 'litertlm.dart';
 import 'model_spec.dart';
 
 /// Kokoro voice ids the app downloads (raw `[510, 256]` style tables).
@@ -29,29 +30,50 @@ abstract final class ModelCatalog {
     license: 'BSD-3-Clause (Real-ESRGAN)',
   );
 
-  static const _kokoroHf =
-      'https://huggingface.co/litert-community/Kokoro-82M/resolve/main/legacy';
-  static const _kokoroVoices =
-      'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices';
+  static const _kokoroBundleUrl =
+      'https://huggingface.co/litert-community/Kokoro-82M/resolve/main/kokoro_int8_fp16.litertlm';
 
-  /// Kokoro-82M as the three bucketed FP32 LiteRT graphs (the `.litertlm`
-  /// bundles at the repo root need the LiteRT-LM omni runtime), plus the
-  /// host-side English front end and 28 English voices.
+  /// Kokoro-82M from the LiteRT-LM `.litertlm` bundle (INT8 weights, the
+  /// CPU/GPU build). The bundle is unpacked into two plain graphs (acoustic +
+  /// vocoder) and the English voice tables; `acoustic.tflite` needs the
+  /// `bidirectional_lstm` custom op (native/bidirectional_lstm.c). The text
+  /// front end (CMUdict + neural G2P) stays on the host.
   static final kokoro82m = ModelSpec(
     id: 'kokoro-82m',
     name: 'Kokoro-82M (TTS)',
     description:
-        'StyleTTS2 + iSTFTNet text-to-speech, 24 kHz. Bucketed FP32 graphs '
-        '(predictor, prosody, vocoder) with host-side G2P, harmonic source '
-        'and iSTFT. English (US/GB), 28 voices.',
+        'StyleTTS2 + iSTFTNet text-to-speech, 24 kHz. INT8 acoustic and '
+        'vocoder graphs unpacked from the LiteRT-LM bundle, with host-side '
+        'G2P and iSTFT. English (US/GB), 28 voices.',
     hfRepo: 'litert-community/Kokoro-82M',
-    fileName: 'kokoro_vocoder.tflite',
-    hfPath: 'legacy/kokoro_vocoder.tflite',
-    approxBytes: 433189582,
+    fileName: 'acoustic.tflite',
+    approxBytes: 294783298 + 50969672 + 2351 + 3329923,
     license: 'Apache-2.0 (weights) · MIT (G2P) · CMUdict',
+    bundle: ModelBundle(_kokoroBundleUrl, 294783298, [
+      const BundleEntry(
+        'acoustic.tflite',
+        63336064,
+        dataType: LitertLmType.tfliteModel,
+        key: 'model_type',
+        value: 'tf_lite_acoustic',
+      ),
+      const BundleEntry(
+        'vocoder.tflite',
+        55627600,
+        dataType: LitertLmType.tfliteModel,
+        key: 'model_type',
+        value: 'tf_lite_vocoder',
+      ),
+      for (final v in KokoroVoices.english)
+        BundleEntry(
+          'voices/$v.bin',
+          522240,
+          dataType: LitertLmType.genericBinaryData,
+          key: 'name',
+          value: v,
+        ),
+    ]),
     extraFiles: const [
-      ModelFile('kokoro_predictor.tflite', '$_kokoroHf/kokoro_predictor.tflite', 90741756),
-      ModelFile('kokoro_prosody.tflite', '$_kokoroHf/kokoro_prosody.tflite', 37393104),
       ModelFile(
         'dp_g2p_litert.tflite',
         'https://huggingface.co/litert-community/Kokoro-G2P-en-US/resolve/main/dp_g2p_litert.tflite',
@@ -70,9 +92,6 @@ abstract final class ModelCatalog {
             'ceae75d6254ff1370c1a55c1e0279e32dbad274d/kokoro/app/src/main/assets/cmudict.txt',
         3329923,
       ),
-    ] + [
-      for (final v in KokoroVoices.english)
-        ModelFile('voices/$v.bin', '$_kokoroVoices/$v.bin', 522240),
     ],
   );
 
